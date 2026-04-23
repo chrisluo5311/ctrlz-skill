@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # CtrlZ - AI Operation Undo System
-# 記錄和撤銷 AI 執行的所有改動
+# Record and revert all changes made by AI
 #
 
 set -e
@@ -10,11 +10,11 @@ DB_PATH="${CTRLZ_DB:-$HOME/.openclaw/skills/ctrlz/undo.db}"
 MAX_STACK="${CTRLZ_STACK_SIZE:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 初始化資料庫
+# Initialize database
 init_db() {
   mkdir -p "$(dirname "$DB_PATH")"
   sqlite3 "$DB_PATH" << 'EOF'
--- 撤銷單位（每個對話回合一個）
+-- Undo unit (one per conversation round)
 CREATE TABLE IF NOT EXISTS undo_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_key TEXT NOT NULL,
@@ -23,62 +23,62 @@ CREATE TABLE IF NOT EXISTS undo_sessions (
   status TEXT DEFAULT 'active' -- active, undone, expired
 );
 
--- 具體操作記錄
+-- Specific operation records
 CREATE TABLE IF NOT EXISTS undo_operations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id INTEGER NOT NULL,
   type TEXT NOT NULL, -- file_write, file_edit, file_delete, dir_create, exec_install, etc.
   target_path TEXT NOT NULL,
-  backup_path TEXT, -- 備份檔案路徑（如果適用）
-  original_content BLOB, -- 原始內容（用於文字檔案）
-  metadata TEXT, -- JSON 格式額外資訊
+  backup_path TEXT, -- Backup file path (if applicable)
+  original_content BLOB, -- Original content (for text files)
+  metadata TEXT, -- Additional info in JSON format
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (session_id) REFERENCES undo_sessions(id) ON DELETE CASCADE
 );
 
--- 索引加速查詢
+-- Indexes for faster queries
 CREATE INDEX IF NOT EXISTS idx_session_key ON undo_sessions(session_key);
 CREATE INDEX IF NOT EXISTS idx_session_status ON undo_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_op_session ON undo_operations(session_id);
 
--- 設定表（儲存 stack 大小等配置）
+-- Settings table (stores stack size and other config)
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
 
--- 初始化預設 stack 大小
+-- Initialize default stack size
 INSERT OR IGNORE INTO settings (key, value) VALUES ('max_stack_size', '1');
 EOF
 }
 
-# 取得設定
+# Get setting
 get_setting() {
   local key="$1"
   sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key = '$key';"
 }
 
-# 設定配置
+# Set setting
 set_setting() {
   local key="$1"
   local value="$2"
   sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO settings (key, value) VALUES ('$key', '$value');"
 }
 
-# 開始一個新的 undo session
+# Start a new undo session
 start_session() {
   local session_key="$1"
   local description="${2:-}"
   
-  # 清理舊的過期 sessions（超過 max_stack）
+  # Cleanup old expired sessions (exceeding max_stack)
   cleanup_old_sessions
   
-  # 建立新 session
+  # Create new session
   local session_id=$(sqlite3 "$DB_PATH" "INSERT INTO undo_sessions (session_key, description) VALUES ('$session_key', '$description'); SELECT last_insert_rowid();")
   echo "$session_id"
 }
 
-# 記錄檔案操作
+# Record file operation
 record_operation() {
   local session_id="$1"
   local op_type="$2"
@@ -86,13 +86,13 @@ record_operation() {
   local backup_path="${4:-}"
   local metadata="${5:-}"
   
-  # 如果是編輯操作，嘗試讀取原始內容備份
+  # If edit operation, try to read original content for backup
   local original_content=""
   if [[ "$op_type" == "file_edit" && -f "$target_path" ]]; then
     original_content=$(cat "$target_path" | base64 -w 0)
   fi
   
-  # 處理特殊字元
+  # Escape special characters
   target_path=$(echo "$target_path" | sed "s/'/''/g")
   backup_path=$(echo "$backup_path" | sed "s/'/''/g")
   metadata=$(echo "$metadata" | sed "s/'/''/g")
@@ -104,12 +104,12 @@ VALUES ($session_id, '$op_type', '$target_path', '$backup_path', '$original_cont
 EOF
 }
 
-# 清理舊 sessions（保持 stack 大小）
+# Cleanup old sessions (maintain stack size)
 cleanup_old_sessions() {
   local max_size=$(get_setting 'max_stack_size')
   max_size="${max_size:-1}"
   
-  # 保留最近的 N 個 active sessions，其他的標記為 expired
+  # Keep recent N active sessions, mark others as expired
   sqlite3 "$DB_PATH" << EOF
 UPDATE undo_sessions 
 SET status = 'expired' 
@@ -120,18 +120,18 @@ WHERE id IN (
   LIMIT -1 OFFSET $max_size
 );
 
--- 刪除 expired sessions 的操作記錄
+-- Delete operation records of expired sessions
 DELETE FROM undo_operations 
 WHERE session_id IN (
   SELECT id FROM undo_sessions WHERE status = 'expired'
 );
 
--- 刪除 expired sessions
+-- Delete expired sessions
 DELETE FROM undo_sessions WHERE status = 'expired';
 EOF
 }
 
-# 列出可撤銷的 sessions
+# List undoable sessions
 list_undoable() {
   local limit="${1:-10}"
   sqlite3 "$DB_PATH" << EOF
@@ -149,7 +149,7 @@ LIMIT $limit;
 EOF
 }
 
-# 取得 session 詳細資訊
+# Get session details
 get_session_details() {
   local session_id="$1"
   sqlite3 "$DB_PATH" << EOF
@@ -164,14 +164,14 @@ ORDER BY id;
 EOF
 }
 
-# 執行撤銷
+# Execute undo
 undo() {
   local count="${1:-1}"
   local undone_count=0
   local packages_to_remove=()
   
   for i in $(seq 1 $count); do
-    # 取得最新的 active session
+    # Get latest active session
     local session_id=$(sqlite3 "$DB_PATH" "SELECT id FROM undo_sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1;")
     
     if [[ -z "$session_id" ]]; then
@@ -179,10 +179,10 @@ undo() {
       return 1
     fi
     
-    # 取得該 session 的所有操作
+    # Get all operations of this session
     local ops=$(sqlite3 "$DB_PATH" "SELECT type, target_path, backup_path, original_content FROM undo_operations WHERE session_id = $session_id ORDER BY id DESC;")
     
-    # 執行每個操作的撤銷
+    # Execute undo for each operation
     while IFS='|' read -r op_type target_path backup_path original_content; do
       case "$op_type" in
         file_write|file_edit)
@@ -191,38 +191,38 @@ undo() {
           elif [[ -n "$original_content" ]]; then
             echo "$original_content" | base64 -d > "$target_path"
           else
-            # 如果沒有備份，刪除檔案
+            # If no backup, delete file
             rm -f "$target_path"
           fi
           ;;
         file_delete)
-          # 還原被刪除的檔案（如果有備份）
+          # Restore deleted file (if backup exists)
           if [[ -n "$backup_path" && -f "$backup_path" ]]; then
             cp "$backup_path" "$target_path"
           fi
           ;;
         dir_create)
-          # 刪除建立的目錄
+          # Delete created directory
           if [[ -d "$target_path" ]]; then
             rm -rf "$target_path"
           fi
           ;;
         exec_install|package_install)
-          # 收集需要移除的套件，稍後統一詢問
+          # Collect packages to remove, ask user later
           packages_to_remove+=("$target_path")
           ;;
       esac
     done <<< "$ops"
     
-    # 標記 session 為已撤銷
+    # Mark session as undone
     sqlite3 "$DB_PATH" "UPDATE undo_sessions SET status = 'undone' WHERE id = $session_id;"
     undone_count=$((undone_count + 1))
   done
   
-  # 如果有套件安裝，列出並詢問用戶
+  # If package installations exist, list and ask user
   if [[ ${#packages_to_remove[@]} -gt 0 ]]; then
     echo "" >&2
-    echo "📦 以下套件安裝無法自動撤銷：" >&2
+    echo "📦 The following package installations cannot be auto-undone:" >&2
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     local idx=1
     for pkg in "${packages_to_remove[@]}"; do
@@ -231,9 +231,9 @@ undo() {
     done
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
     echo "" >&2
-    echo "💡 如需移除，請手動執行：" >&2
+    echo "💡 To remove, manually execute:" >&2
     for pkg in "${packages_to_remove[@]}"; do
-      # 解析套件類型
+      # Parse package type
       if [[ "$pkg" == npm:* ]]; then
         echo "   npm uninstall ${pkg#npm:}" >&2
       elif [[ "$pkg" == pip:* ]]; then
@@ -241,7 +241,7 @@ undo() {
       elif [[ "$pkg" == apt:* ]]; then
         echo "   sudo apt remove ${pkg#apt:}" >&2
       else
-        echo "   # 套件: $pkg" >&2
+        echo "   # Package: $pkg" >&2
       fi
     done
     echo "" >&2
@@ -250,7 +250,7 @@ undo() {
   echo "{\"undone\": $undone_count, \"message\": \"Successfully undone $undone_count operation(s)\"}"
 }
 
-# 顯示統計
+# Show statistics
 stats() {
   local active=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM undo_sessions WHERE status = 'active';")
   local total=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM undo_sessions;")
@@ -260,7 +260,7 @@ stats() {
   echo "{\"active_sessions\": $active, \"total_sessions\": $total, \"total_operations\": $operations, \"max_stack_size\": $max_stack}"
 }
 
-# 備份檔案（在修改前調用）
+# Backup file (call before modification)
 backup_file() {
   local file_path="$1"
   local backup_dir="$HOME/.openclaw/skills/ctrlz/backups"
@@ -276,14 +276,14 @@ backup_file() {
   fi
 }
 
-# 清空所有記錄
+# Clear all records
 clear_all() {
   sqlite3 "$DB_PATH" "DELETE FROM undo_operations; DELETE FROM undo_sessions;"
   rm -rf "$HOME/.openclaw/skills/ctrlz/backups"
   echo "{\"cleared\": true}"
 }
 
-# CLI 主程式
+# CLI main program
 main() {
   init_db
   
@@ -292,12 +292,12 @@ main() {
   
   case "$cmd" in
     init)
-      # 初始化資料庫（已自動執行）
+      # Initialize database (auto-executed)
       echo "{\"initialized\": true, \"db_path\": \"$DB_PATH\"}"
       ;;
       
     start)
-      # 開始新 session
+      # Start new session
       local session_key="${1:-default}"
       local description="${2:-}"
       local session_id=$(start_session "$session_key" "$description")
@@ -305,14 +305,14 @@ main() {
       ;;
       
     record)
-      # 記錄操作
+      # Record operation
       local session_id="$1"
       local op_type="$2"
       local target_path="$3"
       shift 3 || true
       local metadata="${*:-}"
       
-      # 備份檔案（如果是檔案操作）
+      # Backup file (if file operation)
       local backup_path=""
       if [[ "$op_type" =~ ^file_ && -f "$target_path" ]]; then
         backup_path=$(backup_file "$target_path")
@@ -323,32 +323,32 @@ main() {
       ;;
       
     undo)
-      # 撤銷操作
+      # Undo operation
       local count="${1:-1}"
       undo "$count"
       ;;
       
     list)
-      # 列出可撤銷的 sessions
+      # List undoable sessions
       local limit="${1:-10}"
       list_undoable "$limit"
       ;;
       
     details)
-      # 顯示 session 詳細資訊
+      # Show session details
       local session_id="$1"
       get_session_details "$session_id"
       ;;
       
     set-stack)
-      # 設定 stack 大小
+      # Set stack size
       local size="${1:-1}"
       set_setting 'max_stack_size' "$size"
       echo "{\"max_stack_size\": $size}"
       ;;
       
     get-stack)
-      # 取得 stack 大小
+      # Get stack size
       local size=$(get_setting 'max_stack_size')
       echo "{\"max_stack_size\": ${size:-1}}"
       ;;
@@ -368,23 +368,23 @@ CtrlZ - AI Operation Undo System
 Usage: ctrlz <command> [args]
 
 Commands:
-  init                    初始化資料庫
-  start <key> [desc]      開始新的 undo session
-  record <sid> <type> <path> [metadata]  記錄操作
-  undo [count]            撤銷最近 N 個 session（預設1）
-  list [limit]            列出可撤銷的 sessions
-  details <session_id>    顯示 session 詳細資訊
-  set-stack <size>        設定 stack 大小（預設1）
-  get-stack               取得目前 stack 大小
-  stats                   顯示統計資訊
-  clear                   清空所有記錄
+  init                    Initialize database
+  start <key> [desc]      Start new undo session
+  record <sid> <type> <path> [metadata]  Record operation
+  undo [count]            Undo recent N sessions (default 1)
+  list [limit]            List undoable sessions
+  details <session_id>    Show session details
+  set-stack <size>        Set stack size (default 1)
+  get-stack               Get current stack size
+  stats                   Show statistics
+  clear                   Clear all records
 
 Environment Variables:
-  CTRLZ_DB                資料庫路徑（預設 ~/.openclaw/skills/ctrlz/undo.db）
-  CTRLZ_STACK_SIZE        預設 stack 大小
+  CTRLZ_DB                Database path (default ~/.openclaw/skills/ctrlz/undo.db)
+  CTRLZ_STACK_SIZE        Default stack size
 
 Examples:
-  ctrlz start my-session "修改 config 檔案"
+  ctrlz start my-session "Modify config file"
   ctrlz record 1 file_edit /path/to/config.json
   ctrlz undo
   ctrlz undo 3
