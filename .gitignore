@@ -1,0 +1,26 @@
+# Database files
+*.db
+*.db-journal
+
+# Backup files
+backups/
+
+# Test files
+tmp/
+temp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node modules (if any)
+node_modules/
+
+# Logs
+*.log
